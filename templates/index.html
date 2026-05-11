@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Malware Detection</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="app-body">
+    <div class="bg-grid" aria-hidden="true"></div>
+    <div class="bg-glow bg-glow--1" aria-hidden="true"></div>
+    <div class="bg-glow bg-glow--2" aria-hidden="true"></div>
+
+    <div class="container">
+        <header class="app-header">
+            <p class="eyebrow">Security lab</p>
+            <h1>Malware Detection</h1>
+            <p class="subtitle">Classify images with the model, or sweep disks for filenames that match the threat list.</p>
+            <nav class="view-tabs" role="tablist" aria-label="Choose tool">
+                <button type="button" class="view-tab is-active" role="tab" id="tab-image" aria-controls="panel-image" aria-selected="true" data-panel="panel-image">
+                    <span class="view-tab__icon" aria-hidden="true">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                    </span>
+                    Image model
+                </button>
+                <button type="button" class="view-tab" role="tab" id="tab-scan" aria-controls="panel-scan" aria-selected="false" data-panel="panel-scan">
+                    <span class="view-tab__icon" aria-hidden="true">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="18" cy="17" r="2"/></svg>
+                    </span>
+                    File scan
+                </button>
+            </nav>
+        </header>
+
+        <section class="panel view-panel is-active" id="panel-image" role="tabpanel" aria-labelledby="tab-image">
+            <h2 class="panel-title">Image model scan</h2>
+            <p class="panel-lede">Drop a sample image; the CNN+LSTM model returns malware vs benign with a confidence score.</p>
+            <form method="POST" enctype="multipart/form-data" id="upload-form">
+                <input type="hidden" name="form_type" value="image_scan">
+                <div class="drop-zone" id="drop-zone" aria-label="Upload malware sample image">
+                    <input type="file" id="file-upload" name="file" accept="image/*" required onchange="previewImage(event)">
+                    <label for="file-upload" class="drop-zone__label">
+                        <span class="drop-zone__title">Drop image here or click to browse</span>
+                        <span class="drop-zone__hint">PNG, JPG, or other raster formats</span>
+                    </label>
+                </div>
+                <div class="button-row">
+                    <button type="submit" class="btn-primary">Run check</button>
+                    <button type="button" class="reset-button" onclick="resetImageForm()">Clear</button>
+                </div>
+            </form>
+            <div id="result-section" class="result result--image {% if result %}is-visible{% endif %}" style="display: {{ 'block' if result else 'none' }};">
+                <div class="result__row">
+                    <span class="result__label">Prediction</span>
+                    <span id="result" class="result-badge {% if result == 'Malware' %}result-badge--bad{% elif result == 'Benign' %}result-badge--ok{% endif %}">{{ result if result else '' }}</span>
+                </div>
+                <div class="result__row">
+                    <span class="result__label">Confidence</span>
+                    <span class="result-metric" id="probability">{{ '%.4f'|format(probability) if probability is not none else '' }}</span>
+                </div>
+            </div>
+            <img id="image-preview" class="image-preview" src="#" alt="Image preview" style="display: none;">
+        </section>
+
+        <section class="panel scan-panel view-panel" id="panel-scan" role="tabpanel" aria-labelledby="tab-scan" hidden>
+            <h2 class="panel-title">File name scan</h2>
+            <p class="panel-lede">Walk drives or folders and flag files whose names appear in <code>dataset/viruses.txt</code>.</p>
+            <form method="POST" id="scan-form">
+                <input type="hidden" name="form_type" value="file_scan">
+
+                <p class="field-label">Where to scan</p>
+                <div class="scan-modes" role="radiogroup" aria-label="Scan scope">
+                    <label class="mode-chip">
+                        <input type="radio" name="scan_mode" value="system" {% if scan_mode == 'system' %}checked{% endif %}>
+                        <span class="mode-chip__face">Full system</span>
+                    </label>
+                    <label class="mode-chip">
+                        <input type="radio" name="scan_mode" value="drive" {% if scan_mode == 'drive' %}checked{% endif %}>
+                        <span class="mode-chip__face">One drive</span>
+                    </label>
+                    <label class="mode-chip">
+                        <input type="radio" name="scan_mode" value="folder" {% if scan_mode == 'folder' %}checked{% endif %}>
+                        <span class="mode-chip__face">Folder</span>
+                    </label>
+                </div>
+
+                <div id="scan-target-wrapper">
+                    <label for="scan-target" id="scan-target-label" class="field-label">Drive or folder path</label>
+                    <input type="text" id="scan-target" name="scan_target" class="input-styled" placeholder="Example: C:\ or C:\Users\Public" value="{{ scan_target or '' }}" list="drive-options" autocomplete="off">
+                    <datalist id="drive-options">
+                        {% for drive in available_drives %}
+                            <option value="{{ drive }}"></option>
+                        {% endfor %}
+                    </datalist>
+                </div>
+
+                <div id="scan-extension-wrapper">
+                    <label for="scan-extensions" class="field-label">Allowed extensions</label>
+                    <input type="text" id="scan-extensions" name="scan_extensions" class="input-styled" value="{{ scan_extensions }}" placeholder=".exe, .dll, .sys" autocomplete="off">
+                    <span class="field-hint">Comma-separated; only these extensions are opened for name matching.</span>
+                </div>
+
+                <div class="button-row">
+                    <button type="submit" class="btn-primary">Start scan</button>
+                </div>
+            </form>
+
+            {% if scan_job_id %}
+                <div id="scan-progress" class="scan-progress {% if scan_status == 'running' %}scan-progress--pulse{% endif %}">
+                    <div class="scan-progress__head">
+                        <span class="status-pill status-pill--{{ scan_status or 'idle' }}" id="scan-status-pill">{{ scan_status or 'idle' }}</span>
+                        <button type="button" class="btn-ghost" id="copy-job-id" title="Copy job id">Copy job id</button>
+                    </div>
+                    <div class="progress-track" aria-hidden="true">
+                        <div class="progress-fill" id="scan-progress-fill"></div>
+                    </div>
+                    <p class="scan-progress__mono"><strong>Job</strong> <span id="scan-job-id">{{ scan_job_id }}</span></p>
+                    <p><strong>Checked files</strong> <span id="scan-checked-files">{{ scan_checked_files }}</span></p>
+                    <p><strong>Skipped by extension</strong> <span id="scan-skipped-files">{{ scan_skipped_by_extension }}</span></p>
+                    <p><strong>Matches so far</strong> <span id="scan-current-matches">{{ scan_matches|length }}</span></p>
+                </div>
+            {% endif %}
+
+            {% if scan_error %}
+                <div class="scan-error" role="alert">{{ scan_error }}</div>
+            {% endif %}
+
+            {% if scan_checked_files %}
+                <div class="result scan-result scan-result--reveal">
+                    <h3>Scan result</h3>
+                    <p>Checked files: <span>{{ scan_checked_files }}</span></p>
+                    <p>Skipped by extension filter: <span>{{ scan_skipped_by_extension }}</span></p>
+                    <p>Scanned roots: <span>{{ scan_roots | join(', ') }}</span></p>
+                    <p>Matches found: <span>{{ scan_matches|length }}</span></p>
+                    {% if scan_job_id and scan_status == 'completed' %}
+                        <div class="export-links">
+                            <a class="export-btn" href="{{ url_for('export_scan', job_id=scan_job_id, fmt='txt') }}">Export TXT</a>
+                            <a class="export-btn" href="{{ url_for('export_scan', job_id=scan_job_id, fmt='csv') }}">Export CSV</a>
+                        </div>
+                    {% endif %}
+                    {% if scan_truncated %}
+                        <p class="scan-note">Result list limited to 200 matches. Narrow your scope to see fewer results.</p>
+                    {% endif %}
+                    {% if scan_matches %}
+                        <div class="match-list">
+                            {% for match in scan_matches %}
+                                <div class="match-item">{{ match }}</div>
+                            {% endfor %}
+                        </div>
+                    {% endif %}
+                </div>
+            {% endif %}
+        </section>
+    </div>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <script>
+        function previewImage(event) {
+            var input = event.target;
+            if (!input.files || !input.files[0]) return;
+            var reader = new FileReader();
+            reader.onload = function(){
+                var output = document.getElementById('image-preview');
+                var dz = document.getElementById('drop-zone');
+                output.src = reader.result;
+                output.style.display = 'block';
+                output.classList.add('is-visible');
+                if (dz) dz.classList.add('has-file');
+            };
+            reader.readAsDataURL(input.files[0]);
+        }
+
+        function resetImageForm() {
+            document.getElementById('upload-form').reset();
+            var preview = document.getElementById('image-preview');
+            var dz = document.getElementById('drop-zone');
+            preview.src = '#';
+            preview.style.display = 'none';
+            preview.classList.remove('is-visible');
+            if (dz) dz.classList.remove('has-file');
+
+            var rs = document.getElementById('result-section');
+            rs.style.display = 'none';
+            rs.classList.remove('is-visible');
+        }
+
+        function updateScanTargetVisibility() {
+            var selectedMode = document.querySelector('input[name="scan_mode"]:checked').value;
+            var targetWrapper = document.getElementById('scan-target-wrapper');
+            var targetInput = document.getElementById('scan-target');
+            var targetLabel = document.getElementById('scan-target-label');
+
+            if (selectedMode === 'system') {
+                targetWrapper.style.display = 'none';
+                targetInput.required = false;
+            } else {
+                targetWrapper.style.display = 'flex';
+                targetInput.required = true;
+                targetLabel.textContent = selectedMode === 'drive' ? 'Drive path' : 'Folder path';
+                targetInput.placeholder = selectedMode === 'drive' ? 'Example: C:\\' : 'Example: C:\\Users\\Public';
+            }
+        }
+
+        document.querySelectorAll('input[name="scan_mode"]').forEach(function(radio) {
+            radio.addEventListener('change', updateScanTargetVisibility);
+        });
+
+        function setProgressFromCount(checked, status) {
+            var fill = document.getElementById('scan-progress-fill');
+            if (!fill) return;
+            if (status === 'running') {
+                fill.classList.add('is-indeterminate');
+                var w = Math.min(92, 8 + Math.log10((checked || 0) + 1) * 18);
+                fill.style.width = w + '%';
+            } else {
+                fill.classList.remove('is-indeterminate');
+                fill.style.width = status === 'failed' ? '0%' : '100%';
+            }
+        }
+
+        function refreshScanResult(data) {
+            var pill = document.getElementById('scan-status-pill');
+            var checkedElement = document.getElementById('scan-checked-files');
+            var skippedElement = document.getElementById('scan-skipped-files');
+            var matchesElement = document.getElementById('scan-current-matches');
+            var wrap = document.getElementById('scan-progress');
+
+            if (pill) {
+                var st = data.status || 'idle';
+                pill.textContent = st;
+                pill.className = 'status-pill status-pill--' + st;
+            }
+            if (checkedElement) checkedElement.textContent = data.checked_files;
+            if (skippedElement) skippedElement.textContent = data.skipped_by_extension;
+            if (matchesElement) matchesElement.textContent = data.matches.length;
+            if (wrap) {
+                wrap.classList.toggle('scan-progress--pulse', data.status === 'running');
+            }
+            setProgressFromCount(data.checked_files, data.status);
+        }
+
+        function pollScanStatus(jobId) {
+            if (!jobId) return;
+
+            var interval = setInterval(function() {
+                fetch('/scan-status/' + jobId)
+                    .then(function(response) {
+                        if (!response.ok) throw new Error('status fetch failed');
+                        return response.json();
+                    })
+                    .then(function(data) {
+                        refreshScanResult(data);
+                        if (data.status === 'completed' || data.status === 'failed') {
+                            clearInterval(interval);
+                            window.location.href = '/?job_id=' + encodeURIComponent(jobId);
+                        }
+                    })
+                    .catch(function() {
+                        clearInterval(interval);
+                    });
+            }, 1500);
+        }
+
+        function showToast(message) {
+            var t = document.getElementById('toast');
+            if (!t) return;
+            t.textContent = message;
+            t.hidden = false;
+            t.classList.add('is-on');
+            clearTimeout(showToast._timer);
+            showToast._timer = setTimeout(function() {
+                t.classList.remove('is-on');
+                t.hidden = true;
+            }, 2200);
+        }
+
+        function initTabs() {
+            var tabs = document.querySelectorAll('.view-tab');
+            var panels = document.querySelectorAll('.view-panel');
+
+            function activate(panelId) {
+                tabs.forEach(function(tab) {
+                    var on = tab.getAttribute('data-panel') === panelId;
+                    tab.classList.toggle('is-active', on);
+                    tab.setAttribute('aria-selected', on ? 'true' : 'false');
+                });
+                panels.forEach(function(panel) {
+                    var on = panel.id === panelId;
+                    panel.classList.toggle('is-active', on);
+                    panel.hidden = !on;
+                });
+            }
+
+            tabs.forEach(function(tab) {
+                tab.addEventListener('click', function() {
+                    activate(tab.getAttribute('data-panel'));
+                });
+            });
+
+            var params = new URLSearchParams(window.location.search);
+            if (params.get('job_id') || document.querySelector('.scan-error') || document.querySelector('.scan-result')) {
+                activate('panel-scan');
+            } else if (document.getElementById('result-section') && document.getElementById('result-section').style.display !== 'none') {
+                activate('panel-image');
+            } else {
+                activate('panel-image');
+            }
+        }
+
+        function initDropZone() {
+            var dz = document.getElementById('drop-zone');
+            var input = document.getElementById('file-upload');
+            if (!dz || !input) return;
+
+            ['dragenter', 'dragover'].forEach(function(ev) {
+                dz.addEventListener(ev, function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    dz.classList.add('is-dragover');
+                });
+            });
+            ['dragleave', 'dragend'].forEach(function(ev) {
+                dz.addEventListener(ev, function() {
+                    dz.classList.remove('is-dragover');
+                });
+            });
+            dz.addEventListener('drop', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                dz.classList.remove('is-dragover');
+                var files = e.dataTransfer.files;
+                if (!files || !files.length) return;
+                try {
+                    input.files = files;
+                } catch (err) {
+                    return;
+                }
+                previewImage({ target: input });
+            });
+        }
+
+        function initCopyJob() {
+            var btn = document.getElementById('copy-job-id');
+            var idEl = document.getElementById('scan-job-id');
+            if (!btn || !idEl) return;
+            btn.addEventListener('click', function() {
+                var text = idEl.textContent.trim();
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(text).then(function() {
+                        showToast('Job id copied');
+                    });
+                } else {
+                    showToast(text);
+                }
+            });
+        }
+
+        updateScanTargetVisibility();
+        initTabs();
+        initDropZone();
+        initCopyJob();
+        pollScanStatus("{{ scan_job_id or '' }}");
+        setProgressFromCount({{ scan_checked_files or 0 }}, "{{ scan_status or '' }}");
+    </script>
+
+</body>
+</html>
